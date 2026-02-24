@@ -29,54 +29,62 @@ This is the E-Commerce application part of the Multi-Login SSO system. It allows
 ### Setup Instructions
 
 1. **Clone the repository**
+
    ```bash
    git clone <repository-url>
    cd ecommerce-app
    ```
 
 2. **Install dependencies**
+
    ```bash
    composer install
    ```
 
 3. **Environment Configuration**
+
    ```bash
    cp .env.example .env
    ```
 
 4. **Configure the `.env` file**
+
    ```env
    APP_NAME="E-Commerce App"
    APP_URL=http://localhost:8000
-   
+
    DB_CONNECTION=mysql
    DB_HOST=127.0.0.1
    DB_PORT=3306
    DB_DATABASE=ecommerce_db
    DB_USERNAME=root
    DB_PASSWORD=
-   
+
    # SSO Configuration
    SSO_SECRET_KEY=your-shared-secret-key-change-this
    FOODPANDA_APP_URL=http://localhost:8001
    ```
 
 5. **Generate application key**
+
    ```bash
    php artisan key:generate
    ```
 
 6. **Create database**
+
    ```sql
    CREATE DATABASE ecommerce_db;
    ```
 
 7. **Run migrations**
+
    ```bash
    php artisan migrate
    ```
 
 8. **Create storage directories**
+
    ```bash
    mkdir -p storage/framework/sessions
    mkdir -p storage/framework/views
@@ -85,11 +93,13 @@ This is the E-Commerce application part of the Multi-Login SSO system. It allows
    ```
 
 9. **Set permissions**
+
    ```bash
    chmod -R 775 storage bootstrap/cache
    ```
 
 10. **Start the development server**
+
     ```bash
     php artisan serve --port=8000
     ```
@@ -110,9 +120,10 @@ The Multi-Login SSO system uses a token-based authentication approach:
    - Token is signed with a shared secret key
 
 2. **Token Structure:**
+
    ```
    Token = base64(JSON_payload) + "." + HMAC-SHA256(payload, secret_key)
-   
+
    Payload:
    {
        "user_id": 1,
@@ -148,6 +159,7 @@ The Multi-Login SSO system uses a token-based authentication approach:
 ## API Endpoints
 
 ### User Synchronization
+
 ```
 POST /api/sync-user
 Content-Type: application/json
@@ -161,6 +173,7 @@ Content-Type: application/json
 ```
 
 ### SSO Login
+
 ```
 POST /api/sso-login
 Content-Type: application/json
@@ -171,6 +184,7 @@ Content-Type: application/json
 ```
 
 ### SSO Logout
+
 ```
 POST /api/sso-logout
 Content-Type: application/json
@@ -183,6 +197,7 @@ Content-Type: application/json
 ## Database Schema
 
 ### Users Table
+
 ```sql
 - id (bigint, primary key)
 - name (varchar)
@@ -207,6 +222,7 @@ SSO_SECRET_KEY=your-very-secure-random-secret-key-here
 ```
 
 Generate a strong secret:
+
 ```bash
 php -r "echo bin2hex(random_bytes(32));"
 ```
@@ -216,12 +232,14 @@ php -r "echo bin2hex(random_bytes(32));"
 Ensure both apps know each other's URLs:
 
 **E-Commerce App (.env):**
+
 ```env
 APP_URL=http://localhost:8000
 FOODPANDA_APP_URL=http://localhost:8001
 ```
 
 **Foodpanda App (.env):**
+
 ```env
 APP_URL=http://localhost:8001
 ECOMMERCE_APP_URL=http://localhost:8000
@@ -230,11 +248,12 @@ ECOMMERCE_APP_URL=http://localhost:8000
 ## Testing the SSO
 
 1. Start both applications:
+
    ```bash
    # Terminal 1 - E-Commerce
    cd ecommerce-app
    php artisan serve --port=8000
-   
+
    # Terminal 2 - Foodpanda
    cd foodpanda-app
    php artisan serve --port=8001
@@ -286,22 +305,27 @@ ECOMMERCE_APP_URL=http://localhost:8000
 ### Common Issues
 
 **Issue:** "Class not found" errors
+
 - **Solution:** Run `composer dump-autoload`
 
 **Issue:** 500 Internal Server Error
+
 - **Solution:** Check `storage/logs/laravel.log` for details
 - Ensure storage directory has write permissions
 
 **Issue:** CSRF token mismatch
+
 - **Solution:** Clear browser cookies and cache
 - Regenerate APP_KEY
 
 **Issue:** SSO not working between apps
+
 - **Solution:** Verify both apps use the same `SSO_SECRET_KEY`
 - Check that app URLs are correctly configured
 - Ensure both apps are running
 
 **Issue:** Database connection error
+
 - **Solution:** Verify database credentials in `.env`
 - Ensure MySQL service is running
 - Check database exists
