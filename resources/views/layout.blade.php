@@ -237,7 +237,7 @@
             <a href="/" class="navbar-brand">🛍️ E-Commerce System</a>
             <div class="navbar-nav">
                 @auth
-                    <span class="nav-link">{{ Auth::user()->name }}</span>
+                    <span class="nav-link">{{ auth()->user()->name }}</span>
                     <form action="{{ route('logout') }}" method="POST" style="margin: 0;">
                         @csrf
                         <button type="submit" class="btn-logout">Logout</button>

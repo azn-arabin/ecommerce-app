@@ -1,17 +1,17 @@
-@extends('layout')
 
-@section('title', 'Dashboard')
 
-@section('content')
+<?php $__env->startSection('title', 'Dashboard'); ?>
+
+<?php $__env->startSection('content'); ?>
 <div class="card">
-    <h1 class="card-header">Welcome to E-Commerce Dashboard, {{ $user->name }}! 🎉</h1>
+    <h1 class="card-header">Welcome to E-Commerce Dashboard, <?php echo e($user->name); ?>! 🎉</h1>
     
     <div class="dashboard-grid">
         <div class="info-card">
             <h3>👤 Your Profile</h3>
-            <p><strong>Name:</strong> {{ $user->name }}</p>
-            <p><strong>Email:</strong> {{ $user->email }}</p>
-            <p><strong>Member Since:</strong> {{ $user->created_at->format('M d, Y') }}</p>
+            <p><strong>Name:</strong> <?php echo e($user->name); ?></p>
+            <p><strong>Email:</strong> <?php echo e($user->email); ?></p>
+            <p><strong>Member Since:</strong> <?php echo e($user->created_at->format('M d, Y')); ?></p>
         </div>
 
         <div class="info-card">
@@ -21,12 +21,12 @@
             <p style="margin-top: 1rem; font-size: 0.9rem;">
                 With our SSO system, you can seamlessly access both platforms without logging in twice!
             </p>
-            @if($ssoLink)
-                <a href="{{ $ssoLink }}" 
+            <?php if($ssoLink): ?>
+                <a href="<?php echo e($ssoLink); ?>" 
                    class="sso-link">
                     🍔 Access Foodpanda Dashboard →
                 </a>
-            @endif
+            <?php endif; ?>
         </div>
     </div>
 
@@ -40,4 +40,6 @@
         </ol>
     </div>
 </div>
-@endsection
+<?php $__env->stopSection(); ?>
+
+<?php echo $__env->make('layout', \Illuminate\Support\Arr::except(get_defined_vars(), ['__data', '__path']))->render(); ?><?php /**PATH C:\Users\Arabin\Desktop\Projects\My Project\task\task1-multi-login-sso\ecommerce-app\resources\views/dashboard.blade.php ENDPATH**/ ?>

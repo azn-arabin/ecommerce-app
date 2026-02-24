@@ -237,7 +237,7 @@
             <a href="/" class="navbar-brand">🛍️ E-Commerce System</a>
             <div class="navbar-nav">
                 <?php if(auth()->guard()->check()): ?>
-                    <span class="nav-link"><?php echo e(Auth::user()->name); ?></span>
+                    <span class="nav-link"><?php echo e(auth()->user()->name); ?></span>
                     <form action="<?php echo e(route('logout')); ?>" method="POST" style="margin: 0;">
                         <?php echo csrf_field(); ?>
                         <button type="submit" class="btn-logout">Logout</button>

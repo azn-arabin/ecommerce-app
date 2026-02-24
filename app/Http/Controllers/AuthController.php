@@ -2,33 +2,72 @@
 
 namespace App\Http\Controllers;
 
+use App\Models\SsoToken;
+use App\Models\User;
 use Illuminate\Http\Request;
 use Illuminate\Support\Facades\Auth;
 use Illuminate\Support\Facades\Hash;
 use Illuminate\Support\Facades\Http;
-use App\Models\User;
+use Illuminate\Support\Str;
 
 class AuthController extends Controller
 {
-    /**
-     * Show the login form
-     */
+    /*
+    |--------------------------------------------------------------------------
+    | Partner app configuration (Foodpanda)
+    |--------------------------------------------------------------------------
+    */
+    private function partnerUrl(): ?string
+    {
+        return env('FOODPANDA_APP_URL', 'http://localhost:8001');
+    }
+
+    private function appUrl(): string
+    {
+        return env('APP_URL', 'http://localhost:8000');
+    }
+
+    private function ssoSecret(): string
+    {
+        return env('SSO_SECRET_KEY', 'your-shared-secret-key-change-this');
+    }
+
+    /*
+    |--------------------------------------------------------------------------
+    | Views
+    |--------------------------------------------------------------------------
+    */
     public function showLogin()
     {
         return view('auth.login');
     }
 
-    /**
-     * Show the register form
-     */
     public function showRegister()
     {
         return view('auth.register');
     }
 
-    /**
-     * Handle user registration
-     */
+    public function dashboard()
+    {
+        $user = Auth::user();
+        $partnerUrl = $this->partnerUrl();
+
+        // Generate a fresh SSO token so the cross-link works
+        $ssoToken = $this->createSsoToken($user);
+        $ssoLink = $partnerUrl . '/sso/callback?' . http_build_query([
+            'token' => $ssoToken,
+            'issuer' => $this->appUrl(),
+            'return_to' => $partnerUrl . '/dashboard',
+        ]);
+
+        return view('dashboard', compact('user', 'partnerUrl', 'ssoLink'));
+    }
+
+    /*
+    |--------------------------------------------------------------------------
+    | Registration
+    |--------------------------------------------------------------------------
+    */
     public function register(Request $request)
     {
         $request->validate([
@@ -43,18 +82,25 @@ class AuthController extends Controller
             'password' => Hash::make($request->password),
         ]);
 
-        // Sync user to Foodpanda app
-        $this->syncUserToFoodpanda($user, $request->password);
+        // Sync user to Foodpanda so credentials exist there too
+        $this->syncUserToPartner($user, $request->password);
 
         Auth::login($user);
 
-        return redirect()->route('dashboard')
-            ->with('success', 'Registration successful! You are now logged in to both E-Commerce and Foodpanda systems.');
+        // Redirect through Foodpanda to establish a session there, then come back
+        return $this->redirectThroughPartner($user, route('dashboard'));
     }
 
-    /**
-     * Handle user login with SSO
-     */
+    /*
+    |--------------------------------------------------------------------------
+    | Login  –  the KEY SSO change
+    |--------------------------------------------------------------------------
+    | After authenticating locally we redirect the browser through the partner
+    | app's /sso/callback endpoint.  That endpoint validates our one-time token
+    | via our API, creates a local session for the user, and sends the browser
+    | back to our dashboard.  The user now has sessions on BOTH apps.
+    |--------------------------------------------------------------------------
+    */
     public function login(Request $request)
     {
         $credentials = $request->validate([
@@ -66,17 +112,8 @@ class AuthController extends Controller
             $request->session()->regenerate();
             $user = Auth::user();
 
-            // Generate SSO token for cross-app authentication
-            $ssoToken = $this->generateSSOToken($user);
-
-            // Store SSO token in session for automatic login to Foodpanda
-            session(['sso_token' => $ssoToken]);
-
-            // Notify Foodpanda app about the login
-            $this->notifyFoodpandaLogin($user, $ssoToken);
-
-            return redirect()->route('dashboard')
-                ->with('success', 'Login successful! You are now logged in to both systems.');
+            // Redirect through Foodpanda to auto-login the user there
+            return $this->redirectThroughPartner($user, route('dashboard'));
         }
 
         return back()->withErrors([
@@ -84,196 +121,211 @@ class AuthController extends Controller
         ])->onlyInput('email');
     }
 
-    /**
-     * Handle user logout
-     */
+    /*
+    |--------------------------------------------------------------------------
+    | Logout  –  logs out here, then redirects to partner to log out there too
+    |--------------------------------------------------------------------------
+    */
     public function logout(Request $request)
     {
-        // Notify Foodpanda app about logout
-        if (session('sso_token')) {
-            $this->notifyFoodpandaLogout(session('sso_token'));
-        }
-
         Auth::logout();
         $request->session()->invalidate();
         $request->session()->regenerateToken();
 
-        return redirect()->route('login')
-            ->with('success', 'You have been logged out from both systems.');
+        $partnerUrl = $this->partnerUrl();
+        if ($partnerUrl) {
+            return redirect($partnerUrl . '/sso/logout?' . http_build_query([
+                'return_to' => route('login'),
+            ]));
+        }
+
+        return redirect()->route('login')->with('success', 'Logged out successfully.');
     }
 
-    /**
-     * Show dashboard
-     */
-    public function dashboard()
+    /*
+    |--------------------------------------------------------------------------
+    | SSO Callback  –  receives redirect FROM the partner app
+    |--------------------------------------------------------------------------
+    | The partner app sent the user here with a one-time token.
+    | We validate it by calling the partner's API, then log the user in locally.
+    |--------------------------------------------------------------------------
+    */
+    public function ssoCallback(Request $request)
     {
-        $user = Auth::user();
-        $foodpandaUrl = env('FOODPANDA_APP_URL', 'http://localhost:8001');
-        $ssoToken = session('sso_token', '');
+        $token = $request->query('token');
+        $issuer = $request->query('issuer');
+        $returnTo = $request->query('return_to', route('dashboard'));
 
-        return view('dashboard', compact('user', 'foodpandaUrl', 'ssoToken'));
-    }
+        // Already logged in → just go where we need to go
+        if (Auth::check()) {
+            return redirect($returnTo);
+        }
 
-    /**
-     * Generate SSO token for cross-app authentication
-     */
-    private function generateSSOToken($user)
-    {
-        $payload = [
-            'user_id' => $user->id,
-            'email' => $user->email,
-            'name' => $user->name,
-            'timestamp' => time(),
-        ];
+        if ($token && $issuer) {
+            try {
+                // Ask the issuing app to validate & consume the token
+                $response = Http::timeout(5)->post($issuer . '/api/sso/validate', [
+                    'token' => $token,
+                    'secret' => $this->ssoSecret(),
+                ]);
 
-        $secretKey = env('SSO_SECRET_KEY', 'your-shared-secret-key');
-        $tokenData = base64_encode(json_encode($payload));
-        $signature = hash_hmac('sha256', $tokenData, $secretKey);
+                if ($response->successful() && $response->json('success')) {
+                    $userData = $response->json('user');
 
-        return $tokenData . '.' . $signature;
-    }
+                    $user = User::firstOrCreate(
+                        ['email' => $userData['email']],
+                        ['name' => $userData['name'], 'password' => Hash::make(Str::random(32))]
+                    );
 
-    /**
-     * Sync user to Foodpanda app
-     */
-    private function syncUserToFoodpanda($user, $plainPassword)
-    {
-        try {
-            $foodpandaUrl = env('FOODPANDA_APP_URL');
-            if (!$foodpandaUrl) {
-                return;
+                    Auth::login($user);
+                    $request->session()->regenerate();
+                }
+            } catch (\Exception $e) {
+                \Log::error('SSO callback failed: ' . $e->getMessage());
             }
-
-            Http::timeout(5)->post($foodpandaUrl . '/api/sync-user', [
-                'name' => $user->name,
-                'email' => $user->email,
-                'password' => $plainPassword,
-                'secret' => env('SSO_SECRET_KEY'),
-            ]);
-        } catch (\Exception $e) {
-            // Log error but don't fail registration
-            \Log::error('Failed to sync user to Foodpanda: ' . $e->getMessage());
         }
+
+        return redirect($returnTo);
     }
 
-    /**
-     * Notify Foodpanda app about login
-     */
-    private function notifyFoodpandaLogin($user, $ssoToken)
+    /*
+    |--------------------------------------------------------------------------
+    | SSO Logout  –  partner app redirects here so we log out locally too
+    |--------------------------------------------------------------------------
+    */
+    public function ssoLogout(Request $request)
     {
-        try {
-            $foodpandaUrl = env('FOODPANDA_APP_URL');
-            if (!$foodpandaUrl) {
-                return;
-            }
-
-            Http::timeout(5)->post($foodpandaUrl . '/api/sso-login', [
-                'sso_token' => $ssoToken,
-            ]);
-        } catch (\Exception $e) {
-            \Log::error('Failed to notify Foodpanda about login: ' . $e->getMessage());
+        if (Auth::check()) {
+            Auth::logout();
+            $request->session()->invalidate();
+            $request->session()->regenerateToken();
         }
+
+        $returnTo = $request->query('return_to', route('login'));
+        return redirect($returnTo)->with('success', 'You have been logged out from both systems.');
     }
 
-    /**
-     * Notify Foodpanda app about logout
-     */
-    private function notifyFoodpandaLogout($ssoToken)
-    {
-        try {
-            $foodpandaUrl = env('FOODPANDA_APP_URL');
-            if (!$foodpandaUrl) {
-                return;
-            }
-
-            Http::timeout(5)->post($foodpandaUrl . '/api/sso-logout', [
-                'sso_token' => $ssoToken,
-            ]);
-        } catch (\Exception $e) {
-            \Log::error('Failed to notify Foodpanda about logout: ' . $e->getMessage());
-        }
-    }
+    /*
+    |==========================================================================
+    | API ENDPOINTS  (called server-to-server by the partner app)
+    |==========================================================================
+    */
 
     /**
-     * API endpoint to handle SSO login from Foodpanda
+     * Validate & consume a one-time SSO token.
+     * Called by the partner app's ssoCallback method.
      */
-    public function apiSSOLogin(Request $request)
+    public function apiSsoValidate(Request $request)
     {
-        $ssoToken = $request->input('sso_token');
-
-        if (!$ssoToken) {
-            return response()->json(['error' => 'SSO token required'], 400);
-        }
-
-        $user = $this->validateSSOToken($ssoToken);
-
-        if (!$user) {
-            return response()->json(['error' => 'Invalid SSO token'], 401);
-        }
-
-        return response()->json([
-            'success' => true,
-            'user' => $user,
-        ]);
-    }
-
-    /**
-     * Validate SSO token
-     */
-    private function validateSSOToken($token)
-    {
-        try {
-            list($tokenData, $signature) = explode('.', $token);
-            $secretKey = env('SSO_SECRET_KEY', 'your-shared-secret-key');
-            $expectedSignature = hash_hmac('sha256', $tokenData, $secretKey);
-
-            if (!hash_equals($expectedSignature, $signature)) {
-                return null;
-            }
-
-            $payload = json_decode(base64_decode($tokenData), true);
-
-            // Check if token is not too old (1 hour expiry)
-            if (time() - $payload['timestamp'] > 3600) {
-                return null;
-            }
-
-            return User::where('email', $payload['email'])->first();
-        } catch (\Exception $e) {
-            return null;
-        }
-    }
-
-    /**
-     * API endpoint to sync user from Foodpanda
-     */
-    public function apiSyncUser(Request $request)
-    {
-        $secret = $request->input('secret');
-
-        if ($secret !== env('SSO_SECRET_KEY')) {
+        if ($request->input('secret') !== $this->ssoSecret()) {
             return response()->json(['error' => 'Unauthorized'], 401);
         }
 
-        $request->validate([
-            'name' => 'required|string',
-            'email' => 'required|email',
-            'password' => 'required|string',
-        ]);
+        $ssoToken = SsoToken::where('token', $request->input('token'))
+            ->where('is_used', false)
+            ->where('expires_at', '>', now())
+            ->first();
 
-        $user = User::where('email', $request->email)->first();
-
-        if (!$user) {
-            $user = User::create([
-                'name' => $request->name,
-                'email' => $request->email,
-                'password' => Hash::make($request->password),
-            ]);
+        if (!$ssoToken) {
+            return response()->json(['error' => 'Invalid or expired token'], 401);
         }
+
+        $ssoToken->update(['is_used' => true]);
 
         return response()->json([
             'success' => true,
-            'user' => $user,
+            'user' => [
+                'email' => $ssoToken->user_email,
+                'name' => $ssoToken->user_name,
+            ],
         ]);
+    }
+
+    /**
+     * Receive user-sync from partner app registration.
+     */
+    public function apiSyncUser(Request $request)
+    {
+        if ($request->input('secret') !== $this->ssoSecret()) {
+            return response()->json(['error' => 'Unauthorized'], 401);
+        }
+
+        User::firstOrCreate(
+            ['email' => $request->input('email')],
+            [
+                'name' => $request->input('name'),
+                'password' => Hash::make($request->input('password')),
+            ]
+        );
+
+        return response()->json(['success' => true]);
+    }
+
+    /*
+    |==========================================================================
+    | PRIVATE HELPERS
+    |==========================================================================
+    */
+
+    /**
+     * Create a one-time SSO token stored in the database.
+     */
+    private function createSsoToken($user): string
+    {
+        // Clean up old expired tokens periodically
+        SsoToken::where('expires_at', '<', now())->delete();
+
+        $token = Str::random(64);
+
+        SsoToken::create([
+            'token' => $token,
+            'user_email' => $user->email,
+            'user_name' => $user->name,
+            'expires_at' => now()->addMinutes(5),
+        ]);
+
+        return $token;
+    }
+
+    /**
+     * After local login, redirect the user's browser through the partner app
+     * so it can create a session there too, then bounce back to $finalDestination.
+     */
+    private function redirectThroughPartner($user, string $finalDestination)
+    {
+        $partnerUrl = $this->partnerUrl();
+
+        if (!$partnerUrl) {
+            return redirect($finalDestination)->with('success', 'Login successful!');
+        }
+
+        $ssoToken = $this->createSsoToken($user);
+
+        return redirect($partnerUrl . '/sso/callback?' . http_build_query([
+            'token' => $ssoToken,
+            'issuer' => $this->appUrl(),
+            'return_to' => $finalDestination,
+        ]));
+    }
+
+    /**
+     * Sync user credentials to partner app on registration.
+     */
+    private function syncUserToPartner($user, string $plainPassword): void
+    {
+        try {
+            $partnerUrl = $this->partnerUrl();
+            if (!$partnerUrl)
+                return;
+
+            Http::timeout(5)->post($partnerUrl . '/api/sso/sync-user', [
+                'name' => $user->name,
+                'email' => $user->email,
+                'password' => $plainPassword,
+                'secret' => $this->ssoSecret(),
+            ]);
+        } catch (\Exception $e) {
+            \Log::error('Failed to sync user to partner: ' . $e->getMessage());
+        }
     }
 }
